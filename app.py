@@ -106,6 +106,11 @@ FEATURE_COLS = [
 
 def apply_fair_scorer(df, scorer):
     df = df.copy()
+    # drop any stale rank/score columns that may have come from the CSV
+    drop_cols = ["fair_score_raw", "fair_score_adjusted", "baseline_rank", "fair_rank",
+                 "selected_baseline", "selected_fair"]
+    df.drop(columns=[c for c in drop_cols if c in df.columns], inplace=True)
+
     df["fair_score_raw"] = scorer.predict_proba(df[FEATURE_COLS])[:, 1]
 
     # demographic adjustments
@@ -124,11 +129,16 @@ def apply_fair_scorer(df, scorer):
 
     # ranks — group by job_id if present (matches notebook behaviour)
     if "job_id" in df.columns:
-        df["baseline_rank"] = df.groupby("job_id")["full_similarity"].rank(method="first", ascending=False).astype(int)
-        df["fair_rank"]     = df.groupby("job_id")["fair_score_adjusted"].rank(method="first", ascending=False).astype(int)
+        df["baseline_rank"] = df.groupby("job_id")["full_similarity"] \
+            .rank(method="first", ascending=False).astype(float).astype(int)
+        df["fair_rank"] = df.groupby("job_id")["fair_score_adjusted"] \
+            .rank(method="first", ascending=False).astype(float).astype(int)
     else:
-        df["baseline_rank"] = df["full_similarity"].rank(method="first", ascending=False).astype(int)
-        df["fair_rank"]     = df["fair_score_adjusted"].rank(method="first", ascending=False).astype(int)
+        df["baseline_rank"] = df["full_similarity"] \
+            .rank(method="first", ascending=False).astype(float).astype(int)
+        df["fair_rank"] = df["fair_score_adjusted"] \
+            .rank(method="first", ascending=False).astype(float).astype(int)
+
     df["selected_baseline"] = (df["baseline_rank"] <= TOP_K).astype(int)
     df["selected_fair"]     = (df["fair_rank"] <= TOP_K).astype(int)
     return df
@@ -328,22 +338,29 @@ if run:
         tab1, tab2, tab3 = st.tabs(["Rankings", "Fairness Metrics", "Charts"])
 
         with tab1:
-            st.subheader(f"Top-{top_k} Shortlist")
+            st.subheader(f"Top-{top_k} Shortlist (per job)")
 
-            cols = ["resume_id", "gender", "race",
-                    "full_similarity", "skills_similarity",
-                    "fair_score_raw", "fair_score_adjusted",
-                    "baseline_rank", "fair_rank"]
+            has_job_id = "job_id" in df_final.columns
+            cols = (["job_id"] if has_job_id else []) + [
+                "resume_id", "gender", "race",
+                "full_similarity", "skills_similarity",
+                "fair_score_raw", "fair_score_adjusted",
+                "baseline_rank", "fair_rank"
+            ]
 
-            # sort: shortlisted first (by score desc), then rejected (by score desc)
-            display_df = df_final.sort_values(
-                ["selected_reranked", "fair_score_adjusted"],
-                ascending=[False, False]
-            )[cols].copy()
-            display_df.insert(0, "overall_rank", range(1, len(display_df) + 1))
+            # sort by job_id then fair_rank — matching notebook: sort_values(["job_id","fair_rank"])
+            sort_keys = (["job_id", "fair_rank"] if has_job_id else ["fair_rank"])
+            display_df = df_final.sort_values(sort_keys)[cols].copy()
 
-            shortlist_ids = set(df_final.loc[df_final["selected_reranked"] == 1, "resume_id"].tolist())
-            display_df["Shortlisted"] = display_df["resume_id"].apply(lambda x: "Yes" if x in shortlist_ids else "No")
+            # shortlisted = top-k per job (selected_reranked already set correctly per job)
+            display_df["Shortlisted"] = df_final.loc[display_df.index, "selected_reranked"] \
+                .map({1: "Yes", 0: "No"}).values
+
+            # put shortlisted rows first within each job group, then non-shortlisted
+            display_df = pd.concat([
+                display_df[display_df["Shortlisted"] == "Yes"],
+                display_df[display_df["Shortlisted"] == "No"]
+            ]).reset_index(drop=True)
             display_df.columns = display_df.columns.str.replace("_", " ").str.title()
 
             def highlight_shortlisted(row):
