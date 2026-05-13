@@ -330,14 +330,16 @@ if run:
         with tab1:
             st.subheader(f"Top-{top_k} Shortlist")
 
-            rank_col = "reranked_position" if show_rerank else "fair_score_adjusted"
-            display_df = df_final.sort_values(rank_col, ascending=not show_rerank)[
-                ["resume_id", "gender", "race",
-                 "full_similarity", "skills_similarity",
-                 "fair_score_raw", "fair_score_adjusted",
-                 "baseline_rank", "fair_rank"] +
-                (["reranked_position"] if show_rerank else [])
-            ].copy()
+            cols = ["resume_id", "gender", "race",
+                    "full_similarity", "skills_similarity",
+                    "fair_score_raw", "fair_score_adjusted",
+                    "baseline_rank", "fair_rank"]
+
+            # sort: shortlisted first (by score desc), then rejected (by score desc)
+            display_df = df_final.sort_values(
+                ["selected_reranked", "fair_score_adjusted"],
+                ascending=[False, False]
+            )[cols].copy()
             display_df.insert(0, "overall_rank", range(1, len(display_df) + 1))
 
             shortlist_ids = set(df_final.loc[df_final["selected_reranked"] == 1, "resume_id"].tolist())
