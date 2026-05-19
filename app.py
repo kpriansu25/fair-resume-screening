@@ -12,6 +12,13 @@ import seaborn as sns
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    roc_auc_score,
+    roc_curve,
+    precision_recall_curve,
+)
 from sentence_transformers import SentenceTransformer
 from fairlearn.metrics import demographic_parity_difference
 
@@ -224,7 +231,7 @@ def dpd_safe(y_true, y_pred, sensitive):
 
 st.set_page_config(page_title="Fair Resume Screener", layout="wide")
 st.title("Fair Resume Screening System")
-st.caption("Bias-aware AI recruitment tool — dissertation project")
+st.caption("Bias-aware AI recruitment tool")
 
 embedder = load_embedder()
 scorer   = load_scorer()
@@ -351,7 +358,7 @@ if run:
         has_label = "label_relevant" in reranked_df.columns
         y_true    = reranked_df["label_relevant"] if has_label else reranked_df["selected_top_k_fair"]
 
-        tab1, tab2, tab3 = st.tabs(["Rankings", "Fairness Metrics", "Charts"])
+        tab1, tab2, tab3, tab4 = st.tabs(["Rankings", "Fairness Metrics", "Charts", "Model Metrics"])
 
         # ── Tab 1: Rankings ───────────────────────────────────────────────────
         with tab1:
@@ -529,3 +536,99 @@ if run:
             ax3.legend()
             plt.tight_layout()
             st.pyplot(fig3)
+
+        # ── Tab 4: Model Metrics ─────────────────────────────────────────────────
+        with tab4:
+            st.subheader("Model Evaluation Metrics")
+            if not has_label:
+                st.warning("Classification report, confusion matrix, and ROC/AUC charts require a dataset with the `label_relevant` column.")
+            else:
+                y_baseline = reranked_df["selected_top_k"]
+                y_fair = reranked_df["selected_top_k_fair"]
+                y_rerank = reranked_df["selected_top_k_reranked"]
+
+                def show_report(title, y_true_vals, y_pred_vals):
+                    report = classification_report(
+                        y_true_vals,
+                        y_pred_vals,
+                        output_dict=True,
+                        zero_division=0,
+                    )
+                    report_df = pd.DataFrame(report).transpose()
+                    report_df = report_df.rename_axis("Label").reset_index()
+                    report_df["precision"] = report_df["precision"].round(3)
+                    report_df["recall"] = report_df["recall"].round(3)
+                    report_df["f1-score"] = report_df["f1-score"].round(3)
+                    report_df["support"] = report_df["support"].astype(int)
+                    st.markdown(f"**{title}**")
+                    st.dataframe(report_df, use_container_width=True)
+
+                st.subheader("Classification Reports")
+                show_report("Baseline Shortlist", y_true, y_baseline)
+                show_report("Fair Scorer Shortlist", y_true, y_fair)
+                show_report("Re-ranked Shortlist", y_true, y_rerank)
+
+                st.subheader("Confusion Matrices")
+                cm_labels = ["Not Selected", "Selected"]
+                fig_cm, axes_cm = plt.subplots(1, 3, figsize=(18, 4))
+                for ax, y_pred, title in zip(
+                    axes_cm,
+                    [y_baseline, y_fair, y_rerank],
+                    ["Baseline", "Fair Scorer", "Re-ranked"],
+                ):
+                    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+                    sns.heatmap(
+                        cm,
+                        annot=True,
+                        fmt="d",
+                        cmap="Blues",
+                        ax=ax,
+                        cbar=False,
+                        xticklabels=cm_labels,
+                        yticklabels=cm_labels,
+                    )
+                    ax.set_title(title)
+                    ax.set_xlabel("Predicted")
+                    ax.set_ylabel("Actual")
+                plt.tight_layout()
+                st.pyplot(fig_cm)
+
+                st.subheader("ROC / AUC and Precision-Recall")
+                score_items = [
+                    ("Baseline Similarity", reranked_df["full_similarity"]),
+                    ("Fair Score Raw", reranked_df["fair_score_raw"]),
+                    ("Fair Score Adjusted", reranked_df["fair_score_adjusted"]),
+                ]
+                fig_roc, ax_roc = plt.subplots(figsize=(9, 6))
+                fig_pr, ax_pr = plt.subplots(figsize=(9, 6))
+                auc_summary = []
+                for label, score in score_items:
+                    try:
+                        auc = roc_auc_score(y_true, score)
+                        fpr, tpr, _ = roc_curve(y_true, score)
+                        precision, recall, _ = precision_recall_curve(y_true, score)
+                        ax_roc.plot(fpr, tpr, label=f"{label} (AUC={auc:.3f})")
+                        ax_pr.plot(recall, precision, label=label)
+                        auc_summary.append((label, auc))
+                    except ValueError:
+                        continue
+
+                ax_roc.plot([0, 1], [0, 1], linestyle="--", color="gray")
+                ax_roc.set_title("ROC Curves")
+                ax_roc.set_xlabel("False Positive Rate")
+                ax_roc.set_ylabel("True Positive Rate")
+                ax_roc.legend(loc="lower right")
+                ax_roc.grid(True)
+                st.pyplot(fig_roc)
+
+                ax_pr.set_title("Precision-Recall Curves")
+                ax_pr.set_xlabel("Recall")
+                ax_pr.set_ylabel("Precision")
+                ax_pr.legend(loc="lower left")
+                ax_pr.grid(True)
+                st.pyplot(fig_pr)
+
+                if auc_summary:
+                    auc_df = pd.DataFrame(auc_summary, columns=["Score", "AUC"])
+                    st.markdown("**AUC Summary**")
+                    st.dataframe(auc_df.style.format({"AUC": "{:.3f}"}), use_container_width=True)
